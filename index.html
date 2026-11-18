@@ -1,0 +1,76 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+<meta name="theme-color" content="#173b63"><link rel="manifest" href="manifest.webmanifest">
+<title>Office Proforma Converter</title>
+<style>
+:root{font-family:system-ui,Arial,sans-serif;color:#172536;background:#f3f6fa}
+body{margin:0}.wrap{max-width:850px;margin:auto;padding:18px}
+header{background:#173b63;color:white;padding:22px;border-radius:16px}
+h1{font-size:1.35rem;margin:0 0 6px}header p{margin:0;color:#dce8f5}
+.card{background:white;border:1px solid #dce3eb;border-radius:14px;padding:18px;margin-top:16px}
+label{display:block;font-weight:650;margin:12px 0 6px}
+input,select,button{font:inherit}input[type=file],select{width:100%;padding:12px;border:1px solid #bdc9d6;border-radius:9px;background:white}
+button{border:0;border-radius:10px;padding:12px 18px;background:#1769aa;color:white;font-weight:650;width:100%;margin-top:14px}
+button:disabled{opacity:.5}.muted{color:#5d6b79;font-size:.9rem}.status{white-space:pre-wrap;background:#f1f5f9;padding:12px;border-radius:9px;margin-top:12px}
+.row{display:flex;gap:10px;align-items:center;flex-wrap:wrap}.row label{font-weight:500;margin:8px 0}
+small{display:block;color:#5d6b79;margin-top:6px}
+</style>
+</head>
+<body><main class="wrap">
+<header><h1>Office Proforma Converter</h1><p>Offline-first document conversion prototype</p></header>
+<section class="card">
+<h2>1. Choose a document</h2>
+<p class="muted">Supported input: PDF, JPG and PNG. For this first prototype, text-based PDFs are supported best. Scanned documents require OCR and may need online or advanced processing.</p>
+<label for="file">Select PDF or image</label><input id="file" type="file" accept=".pdf,image/png,image/jpeg">
+<label for="format">Choose output format</label><select id="format"><option value="">Select Word or Excel</option><option value="docx">Word (.docx)</option><option value="xlsx">Excel (.xlsx)</option></select>
+<button id="convert">Convert on this device</button>
+<div id="status" class="status" role="status">Ready. Your file stays on this device unless you explicitly approve an online upload.</div>
+</section>
+<section class="card"><h2>2. Online fallback</h2><p class="muted">If local extraction cannot read your document, this prototype will not upload it automatically. Online conversion is not connected yet. A future online service must show its provider, privacy/retention terms and ask for your approval first.</p></section>
+<section class="card"><h2>Prototype limitations</h2><ul><li>Extracts selectable text from PDFs and creates a basic editable Word or Excel file.</li><li>Does not yet reconstruct complex tables, merged cells, borders, page layouts or handwriting.</li><li>Image OCR is not enabled in this first milestone.</li><li>Install/offline caching requires opening this app once while connected to the internet on an HTTPS host.</li></ul></section>
+</main>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.11.174/pdf.min.js"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/docx/8.5.0/docx.umd.min.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/xlsx@0.18.5/dist/xlsx.full.min.js"></script>
+<script>
+const $=id=>document.getElementById(id), status=$('status');
+if(window.pdfjsLib) pdfjsLib.GlobalWorkerOptions.workerSrc='https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.11.174/pdf.worker.min.js';
+if('serviceWorker' in navigator && location.protocol.startsWith('http')) navigator.serviceWorker.register('./sw.js').catch(()=>{});
+function say(s){status.textContent=s}
+async function pdfText(file){
+ if(!window.pdfjsLib) throw Error('PDF engine did not load. Connect to the internet and reload once.');
+ const data=new Uint8Array(await file.arrayBuffer()), pdf=await pdfjsLib.getDocument({data}).promise;
+ let pages=[];
+ for(let n=1;n<=pdf.numPages;n++){let page=await pdf.getPage(n), c=await page.getTextContent();pages.push(c.items.map(x=>x.str).join(' '));}
+ return pages;
+}
+$('convert').onclick=async()=>{
+ const f=$('file').files[0], fmt=$('format').value;
+ if(!f){say('Please select a PDF or image first.');return}
+ if(!fmt){say('Please choose Word or Excel.');return}
+ $('convert').disabled=true;
+ try{
+  if(f.type!=='application/pdf' && !f.name.toLowerCase().endsWith('.pdf')) throw Error('This first milestone currently converts text-based PDFs only. Image OCR is planned for a later milestone.');
+  say('Reading PDF locally…');
+  const pages=await pdfText(f);
+  const nonempty=pages.filter(x=>x.trim());
+  if(!nonempty.length) throw Error('No selectable text was found. This may be a scanned PDF. No upload was made.');
+  if(fmt==='docx'){
+   if(!window.docx) throw Error('Word generation library did not load.');
+   const {Document,Packer,Paragraph,TextRun,HeadingLevel}=docx;
+   const children=[];
+   pages.forEach((p,i)=>{if(i)children.push(new Paragraph({text:`Page ${i+1}`,heading:HeadingLevel.HEADING_2}));p.split(/\n+/).forEach(line=>{if(line.trim())children.push(new Paragraph({children:[new TextRun(line)]}))})});
+   const blob=await Packer.toBlob(new Document({sections:[{children}]}));download(blob,f.name.replace(/\.pdf$/i,'')+'.docx');
+  } else {
+   if(!window.XLSX) throw Error('Excel generation library did not load.');
+   const rows=[];pages.forEach((p,i)=>{rows.push([`Page ${i+1}`]);p.split(/\s{2,}|\t/).filter(Boolean).forEach(x=>rows.push([x]))});
+   const ws=XLSX.utils.aoa_to_sheet(rows), wb=XLSX.utils.book_new();XLSX.utils.book_append_sheet(wb,ws,'Extracted Text');XLSX.writeFile(wb,f.name.replace(/\.pdf$/i,'')+'.xlsx');
+  }
+  say('Conversion complete. The file was generated locally. Review it carefully: this prototype extracts text and does not preserve the original layout.');
+ }catch(e){say('Could not convert: '+e.message)}
+ finally{$('convert').disabled=false}
+};
+function download(blob,name){const a=document.createElement('a'),u=URL.createObjectURL(blob);a.href=u;a.download=name;a.click();setTimeout(()=>URL.revokeObjectURL(u),1500)}
+</script></body></html>
